@@ -13,9 +13,45 @@ import { GoogleAIFileManager, FileState } from '@google/generative-ai/server';
 import { promises as fs } from 'fs';
 import { config } from '../config/index.js';
 import { logger } from '../lib/logger.js';
+import { getVideoDuration } from '../utils/ffmpegUtils.js';
 
-const genAI       = new GoogleGenerativeAI(config.gemini.apiKey);
-const fileManager = new GoogleAIFileManager(config.gemini.apiKey);
+const genAI       = new GoogleGenerativeAI(config.gemini.apiKey || 'mock_key');
+const fileManager = new GoogleAIFileManager(config.gemini.apiKey || 'mock_key');
+
+// Helper to generate realistic mock clips for local sandbox mode
+function generateMockClips(duration = 60) {
+  const clips = [];
+  const segments = [
+    { start: 0, end: Math.min(15, duration), title: "The Ultimate Secret Revealed! 🤫" },
+    { start: Math.min(20, duration), end: Math.min(40, duration), title: "Why standard advice is complete BS... 🤯" },
+    { start: Math.min(45, duration), end: Math.min(60, duration), title: "This one trick changes everything! 🎯" }
+  ];
+
+  for (let i = 0; i < Math.min(3, segments.length); i++) {
+    const seg = segments[i];
+    if (seg.start >= duration) break;
+    
+    // Generate word level transcripts
+    const text = "Hello this is a premium social media video clip with highly engaging dynamic auto generated subtitles";
+    const words = text.split(" ");
+    const durationPerWord = (seg.end - seg.start) / words.length;
+    
+    const word_level_transcript = words.map((w, index) => {
+      const start = seg.start + index * durationPerWord;
+      const end = start + durationPerWord * 0.8; // subtle gap
+      return { word: w, start: parseFloat(start.toFixed(2)), end: parseFloat(end.toFixed(2)) };
+    });
+
+    clips.push({
+      start_time: seg.start,
+      end_time: seg.end,
+      title: seg.title,
+      word_level_transcript
+    });
+  }
+
+  return clips;
+}
 
 /**
  * @typedef {Object} WordTimestamp
@@ -67,6 +103,20 @@ async function waitForFileActive(fileName, maxWaitMs = 10 * 60 * 1000) {
  * @returns {Promise<ClipSuggestion[]>}
  */
 export async function analyseVideoForClips(localFilePath, mimeType) {
+  // If the key is the placeholder or is missing, immediately enter sandbox mode
+  const isPlaceholderKey = !config.gemini.apiKey || config.gemini.apiKey === 'your_gemini_api_key_here';
+  
+  if (isPlaceholderKey) {
+    logger.info({ localFilePath }, 'GEMINI_API_KEY is placeholder/missing. Using local sandbox mock clips.');
+    try {
+      const duration = await getVideoDuration(localFilePath);
+      return generateMockClips(duration);
+    } catch (err) {
+      logger.error({ err }, 'Mock generation failed. Probing failed.');
+      return generateMockClips(60);
+    }
+  }
+
   let uploadedFileName = null;
 
   try {
@@ -80,6 +130,7 @@ export async function analyseVideoForClips(localFilePath, mimeType) {
 
     uploadedFileName = uploadResponse.file.name;
     logger.info({ fileName: uploadedFileName }, 'File uploaded to Google AI');
+
 
     // ── Step 2: Wait for Google to finish processing the file ──────────────
     await waitForFileActive(uploadedFileName);

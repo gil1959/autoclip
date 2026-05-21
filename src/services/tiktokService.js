@@ -36,27 +36,31 @@ const SCOPES = [
 // ── OAuth helpers ──────────────────────────────────────────────────────────
 
 /**
- * Build the TikTok authorisation redirect URL.
+ * Build the TikTok authorisation redirect URL with PKCE.
  * The `state` parameter must be verified in the callback to prevent CSRF.
  *
  * @param {string} state - A random, unguessable string stored in the user's session.
+ * @param {string} codeChallenge - The PKCE code challenge.
  * @returns {string} The full redirect URL.
  */
-export function buildTikTokAuthUrl(state) {
+export function buildTikTokAuthUrl(state, codeChallenge) {
   const params = new URLSearchParams({
     client_key:    config.tiktok.clientKey,
     scope:         SCOPES,
     response_type: 'code',
     redirect_uri:  config.tiktok.redirectUri,
     state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
   });
   return `${TIKTOK_OAUTH_URL}?${params.toString()}`;
 }
 
 /**
- * Exchange an authorisation code for an access_token + refresh_token.
+ * Exchange an authorisation code for an access_token + refresh_token using PKCE.
  *
  * @param {string} code - The `code` query param from TikTok's callback.
+ * @param {string} codeVerifier - The PKCE code verifier.
  * @returns {Promise<{
  *   open_id: string,
  *   access_token: string,
@@ -65,13 +69,14 @@ export function buildTikTokAuthUrl(state) {
  *   scope: string,
  * }>}
  */
-export async function exchangeCodeForTokens(code) {
+export async function exchangeCodeForTokens(code, codeVerifier) {
   const body = new URLSearchParams({
     client_key:    config.tiktok.clientKey,
     client_secret: config.tiktok.clientSecret,
     code,
     grant_type:    'authorization_code',
     redirect_uri:  config.tiktok.redirectUri,
+    code_verifier: codeVerifier,
   });
 
   const response = await fetch(TIKTOK_TOKEN_URL, {

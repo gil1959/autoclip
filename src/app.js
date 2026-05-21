@@ -1,6 +1,11 @@
 // src/app.js
 // Express application entry point.
 
+// Solve Prisma BigInt serialization bug for Express JSON responses
+BigInt.prototype.toJSON = function () {
+  return Number(this);
+};
+
 import 'dotenv/config';
 import express from 'express';
 import helmet from 'helmet';
@@ -10,6 +15,7 @@ import rateLimit from 'express-rate-limit';
 import { config }  from './config/index.js';
 import { logger }  from './lib/logger.js';
 import { prisma }  from './lib/prisma.js';
+import { ensureBucketExists } from './lib/s3.js';
 
 import authRoutes   from './routes/auth.js';
 import uploadRoutes from './routes/upload.js';
@@ -93,8 +99,9 @@ app.use((err, req, res, _next) => {
 
 // ── Start server ───────────────────────────────────────────────────────────
 
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, async () => {
   logger.info({ port: config.port, env: config.env }, 'AutoClipper API server started');
+  await ensureBucketExists();
 });
 
 // Graceful shutdown

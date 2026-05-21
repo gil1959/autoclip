@@ -87,6 +87,22 @@ router.post('/tiktok', requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/post/tiktok/status
+ * Check if the user has active TikTok credentials.
+ */
+router.get('/tiktok/status', requireAuth, async (req, res) => {
+  try {
+    const cred = await prisma.tikTokCredential.findUnique({
+      where: { userId: req.user.id },
+    });
+    res.json({ connected: !!cred });
+  } catch (err) {
+    logger.error({ err }, 'Error checking TikTok status');
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Middleware ─────────────────────────────────────────────────────────────
 
 function requireAuth(req, res, next) {

@@ -11,6 +11,10 @@ import { logger } from '../lib/logger.js';
 // Honour the configured FFmpeg binary path
 if (config.ffmpeg.path) {
   ffmpeg.setFfmpegPath(config.ffmpeg.path);
+  // On Windows/Linux, fluent-ffmpeg also needs to know the path of the ffprobe binary.
+  // Derive it from the ffmpeg path.
+  const ffprobePath = config.ffmpeg.path.replace(/ffmpeg\.exe$/i, 'ffprobe.exe').replace(/ffmpeg$/i, 'ffprobe');
+  ffmpeg.setFfprobePath(ffprobePath);
 }
 
 /**

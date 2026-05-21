@@ -2,7 +2,7 @@
 // TikTok OAuth routes — Workflow C (steps 1 & 2).
 
 import { Router } from 'express';
-import { randomBytes } from 'crypto';
+import crypto, { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
 import {
   buildTikTokAuthUrl,
@@ -11,12 +11,108 @@ import {
 } from '../services/tiktokService.js';
 import { config } from '../config/index.js';
 import { logger } from '../lib/logger.js';
+import { prisma } from '../lib/prisma.js';
 
 const router = Router();
 
+// Helper to hash passwords using PBKDF2
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+}
+
+// Helper to verify passwords
+function verifyPassword(password, storedPasswordHash) {
+  if (!storedPasswordHash || !storedPasswordHash.includes(':')) return false;
+  const [salt, hash] = storedPasswordHash.split(':');
+  const checkHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return hash === checkHash;
+}
+
+/**
+ * POST /auth/register
+ * Register a new local user.
+ */
+router.post('/register', async (req, res) => {
+  const { email, password, name } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
+
+    const passwordHash = hashPassword(password);
+    const user = await prisma.user.create({
+      data: {
+        email,
+        name,
+        passwordHash,
+      },
+    });
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      config.auth.jwtSecret,
+      { expiresIn: config.auth.jwtExpiresIn }
+    );
+
+    logger.info({ userId: user.id, email: user.email }, 'User registered successfully');
+    res.status(201).json({
+      success: true,
+      token,
+      user: { id: user.id, email: user.email, name: user.name },
+    });
+  } catch (err) {
+    logger.error({ err }, 'Registration error');
+    res.status(500).json({ error: 'Internal server error during registration' });
+  }
+});
+
+/**
+ * POST /auth/login
+ * Authenticate local user and return JWT.
+ */
+router.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      config.auth.jwtSecret,
+      { expiresIn: config.auth.jwtExpiresIn }
+    );
+
+    logger.info({ userId: user.id }, 'User logged in successfully');
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, email: user.email, name: user.name },
+    });
+  } catch (err) {
+    logger.error({ err }, 'Login error');
+    res.status(500).json({ error: 'Internal server error during login' });
+  }
+});
+
+
 // In-memory state store for CSRF protection.
 // In production, use Redis or a signed cookie instead.
-const pendingOAuthStates = new Map();   // state => { userId, expiresAt }
+const pendingOAuthStates = new Map();   // state => { userId, codeVerifier, expiresAt }
 
 /**
  * GET /auth/tiktok
@@ -27,13 +123,21 @@ router.get('/tiktok', requireAppAuth, (req, res) => {
   // Generate a random state for CSRF protection
   const state = randomBytes(24).toString('hex');
 
+  // Generate PKCE code verifier and challenge (required by TikTok Login Kit v2)
+  const codeVerifier = randomBytes(32).toString('base64url');
+  const codeChallenge = crypto
+    .createHash('sha256')
+    .update(codeVerifier)
+    .digest('base64url');
+
   pendingOAuthStates.set(state, {
     userId:    req.user.id,
+    codeVerifier,
     expiresAt: Date.now() + 10 * 60 * 1000,  // 10 min window
   });
 
-  const authUrl = buildTikTokAuthUrl(state);
-  logger.info({ userId: req.user.id, state }, 'Redirecting to TikTok OAuth');
+  const authUrl = buildTikTokAuthUrl(state, codeChallenge);
+  logger.info({ userId: req.user.id, state }, 'Redirecting to TikTok OAuth with PKCE');
 
   res.redirect(authUrl);
 });
@@ -62,12 +166,12 @@ router.get('/tiktok/callback', async (req, res) => {
     return res.status(400).json({ error: 'Invalid or expired OAuth state parameter' });
   }
 
-  const { userId } = pending;
+  const { userId, codeVerifier } = pending;
   pendingOAuthStates.delete(state);
 
   try {
     // ── Exchange code for tokens ──────────────────────────────────────────
-    const tokens = await exchangeCodeForTokens(code);
+    const tokens = await exchangeCodeForTokens(code, codeVerifier);
 
     // ── Persist credentials ───────────────────────────────────────────────
     await saveTikTokCredentials(userId, tokens);
@@ -92,10 +196,14 @@ router.get('/tiktok/callback', async (req, res) => {
  */
 function requireAppAuth(req, res, next) {
   const header = req.headers.authorization || '';
-  const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+  let token  = header.startsWith('Bearer ') ? header.slice(7) : null;
+
+  if (!token && req.query.token) {
+    token = req.query.token;
+  }
 
   if (!token) {
-    return res.status(401).json({ error: 'Missing Authorization header' });
+    return res.status(401).json({ error: 'Missing Authorization header or token query parameter' });
   }
 
   try {

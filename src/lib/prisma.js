@@ -17,7 +17,7 @@ if (!globalForPrisma.__prisma) {
 
   globalForPrisma.__prisma.$on('query', (e) => {
     if (process.env.NODE_ENV === 'development') {
-      logger.debug({ duration: e.duration, query: e.query }, 'Prisma query');
+      logger.debug({ duration: `${e.duration}ms`, query: e.query }, 'Prisma query');
     }
   });
 
@@ -26,7 +26,7 @@ if (!globalForPrisma.__prisma) {
   });
 
   globalForPrisma.__prisma.$on('warn', (e) => {
-    logger.warn({ message: e.message }, 'Prisma warning');
+    logger.warn({ message: e.message }, 'Prisma warn');
   });
 }
 

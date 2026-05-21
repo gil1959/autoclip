@@ -24,3 +24,7 @@ prisma/migrations/
 
 # Tmp worker files
 /tmp/autoclipper/
+
+# Local binaries and data stores
+bin/
+data/
