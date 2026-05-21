@@ -1,0 +1,82 @@
+# docker-compose.yml
+# Local development stack — Redis + MinIO (S3-compatible).
+# PostgreSQL is intentionally omitted here because most developers
+# already have a local Postgres instance or use Neon/Supabase.
+# Add a `postgres` service below if you prefer a fully containerised setup.
+
+version: '3.9'
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: autoclipper_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: autoclipper_minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    environment:
+      MINIO_ROOT_USER:     minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO bucket initialiser — creates the "autoclipper" bucket on first run
+  minio_init:
+    image: minio/mc:latest
+    container_name: autoclipper_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/autoclipper &&
+        mc anonymous set download local/autoclipper &&
+        echo 'MinIO bucket ready.'
+      "
+
+  # Optional: uncomment to run a containerised PostgreSQL
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: autoclipper_postgres
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5432:5432"
+  #   environment:
+  #     POSTGRES_USER: autoclipper
+  #     POSTGRES_PASSWORD: changeme
+  #     POSTGRES_DB: autoclipper_db
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U autoclipper"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+volumes:
+  redis_data:
+  minio_data:
+  # postgres_data:

@@ -1,0 +1,119 @@
+// prisma/schema.prisma
+// AutoClipper — Database Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum ClipStatus {
+  RAW          // Clip has been cut but no captions yet
+  CAPTIONING   // Caption burn-in job is running
+  READY        // Final video with captions is ready
+  POSTED       // Has been posted to at least one platform
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id              String             @id @default(cuid())
+  email           String             @unique
+  name            String?
+  passwordHash    String?            // null if user authenticates via OAuth only
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  tiktokCredential TikTokCredential?
+  videoJobs        VideoJob[]
+
+  @@map("users")
+}
+
+model TikTokCredential {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  openId          String   @unique  // TikTok's persistent user identifier
+  accessToken     String
+  refreshToken    String
+  tokenExpiresAt  DateTime           // UTC timestamp when access_token expires
+  scope           String             // Space-separated list of granted scopes
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("tiktok_credentials")
+}
+
+model VideoJob {
+  id                String    @id @default(cuid())
+  userId            String
+  status            JobStatus @default(PENDING)
+
+  // S3 key (not the full URL) of the original uploaded video
+  originalVideoKey  String
+  originalFilename  String?
+  fileSizeBytes     BigInt?
+  durationSeconds   Float?    // Populated after FFmpeg probe
+
+  // BullMQ job reference for status tracking
+  bullJobId         String?
+
+  // Error details when status = FAILED
+  errorMessage      String?
+  errorStack        String?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clips             Clip[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("video_jobs")
+}
+
+model Clip {
+  id              String     @id @default(cuid())
+  jobId           String
+  status          ClipStatus @default(RAW)
+
+  // Time range from the source video (seconds, float precision)
+  startTime       Float
+  endTime         Float
+
+  // AI-generated metadata
+  title           String
+  // Stored as JSON array: [{ word: string, start: number, end: number }]
+  transcriptJson  Json
+
+  // S3 keys
+  rawVideoKey     String?    // Cropped 9:16 clip, no captions
+  finalVideoKey   String?    // Clip with ASS captions burned in
+
+  // TikTok post reference
+  tiktokPostId    String?
+  postedAt        DateTime?
+
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  job             VideoJob   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@map("clips")
+}
